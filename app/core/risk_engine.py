@@ -4,16 +4,28 @@ from typing import Dict, Tuple
 import pandas as pd
 
 from app.core.config import settings
+from app.core.feature_engineering import compute_derived_features, MODEL_FEATURES
 
-REQUIRED_FEATURES = [
+# RAW inputs collected from HRMS + the wellness self-assessment app.
+# feature_engineering.compute_derived_features() turns these into the
+# full 17-field set the ML model expects (see MODEL_FEATURES).
+REQUIRED_RAW_FEATURES = [
+    "age",
+    "years_of_service",
+    "rank_encoded",
     "deployment_months",
     "duty_hours",
-    "night_shifts",
+    "night_shifts_per_month",
     "sleep_hours",
-    "traumatic_incidents",
-    "social_support",
-    "wellness_score",
+    "incidents_exposed",
+    "leaves_taken",
+    "leaves_entitled",
+    "transfers_last_2yr",
+    "training_days_yr",
+    "exercise_freq_per_wk",
+    "social_support_score",
     "family_separated",
+    "wellness_score",
 ]
 
 _ml_artifact = None
@@ -39,20 +51,26 @@ def model_version() -> str:
 
 
 def _rule_based_score(f: Dict) -> float:
+    """
+    Transparent fallback scorer, used when no trained model is loaded.
+    Operates on the derived (17-field) feature set so its output is
+    directly comparable to the ML model's.
+    """
     s = 0.0
-    s += (f["deployment_months"] / 36) * 28
-    s += (max(0, f["duty_hours"] - 8) / 8) * 22
-    s += (f["night_shifts"] / 20) * 14
-    s += f["family_separated"] * 10
-    s += (f["traumatic_incidents"] / 10) * 14
-    s -= ((f["sleep_hours"] - 3) / 7) * 16
-    s -= (f["social_support"] / 10) * 8
-    s -= (f["wellness_score"] / 10) * 10
+    s += (f["deployment_months"] / 36) * 18
+    s += (f["overwork_score"] / 100) * 16
+    s += (f["burnout_index"] / 100) * 20
+    s += (f["workload_stress"] / 100) * 14
+    s += (f["isolation_score"] / 100) * 12
+    s += (f["incidents_exposed"] / 10) * 10
+    s -= (f["recovery_index"] / 100) * 10
+    s -= (f["resilience_score"] / 100) * 10
+    s -= (f["social_support_score"] / 10) * 6
     return max(0.0, min(100.0, round(s, 1)))
 
 
 def _ml_score(f: Dict) -> Tuple[float, str]:
-    row = pd.DataFrame([f])[_ml_artifact["features"]]
+    row = pd.DataFrame([f])[MODEL_FEATURES]
     scaler = _ml_artifact.get("scaler")
     if scaler is not None:
         row = scaler.transform(row)
@@ -62,10 +80,17 @@ def _ml_score(f: Dict) -> Tuple[float, str]:
     return score, str(risk)
 
 
-def predict(features: Dict) -> Tuple[float, str]:
-    missing = [k for k in REQUIRED_FEATURES if k not in features]
+def predict(raw_features: Dict) -> Tuple[float, str]:
+    """
+    raw_features: dict containing REQUIRED_RAW_FEATURES (what HRMS / the
+    app actually collects). This function derives the full 17-field
+    feature set internally before scoring.
+    """
+    missing = [k for k in REQUIRED_RAW_FEATURES if k not in raw_features]
     if missing:
-        raise ValueError(f"Missing required features: {missing}")
+        raise ValueError(f"Missing required raw features: {missing}")
+
+    features = compute_derived_features(raw_features)
 
     if _ml_artifact is not None:
         return _ml_score(features)
@@ -76,12 +101,18 @@ def predict(features: Dict) -> Tuple[float, str]:
 
 
 def alert_reason(features: Dict, risk: str) -> str:
-    if features["deployment_months"] >= 24:
+    """
+    features here should be the DERIVED feature dict (output of
+    compute_derived_features), so it has access to composite scores.
+    """
+    if features.get("deployment_months", 0) >= 24:
         return f"{int(features['deployment_months'])}-month continuous deployment"
-    if features["duty_hours"] >= 13:
-        return f"{features['duty_hours']}h avg duty, {features['sleep_hours']}h sleep"
-    if features["family_separated"]:
+    if features.get("burnout_index", 0) >= 70:
+        return f"High burnout index ({features['burnout_index']}/100)"
+    if features.get("family_separation"):
         return "Extended family separation"
-    if features["night_shifts"] >= 15:
-        return f"Night shift load {int(features['night_shifts'])}/month"
+    if features.get("night_shifts_per_month", 0) >= 15:
+        return f"Night shift load {int(features['night_shifts_per_month'])}/month"
+    if features.get("isolation_score", 0) >= 60:
+        return f"Elevated isolation risk ({features['isolation_score']}/100)"
     return f"Composite {risk.lower()}-risk profile flagged"

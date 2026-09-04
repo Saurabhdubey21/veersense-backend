@@ -3,6 +3,7 @@ import random
 from app.core.database import SessionLocal, Base, engine
 from app.core.security import hash_password
 from app.core import risk_engine
+from app.core.feature_engineering import compute_derived_features
 from app.models.models import User, Assessment, Alert
 
 Base.metadata.create_all(bind=engine)
@@ -10,6 +11,7 @@ db = SessionLocal()
 
 UNITS = ["42 Bn CRPF", "Signals Wing", "Border Detachment C", "Unit 4", "HQ Coy"]
 RANKS = ["Constable", "Head Constable", "ASI", "SI", "Inspector"]
+RANK_ENCODING = {r: i for i, r in enumerate(RANKS)}
 
 
 def get_or_create_user(username, password, role, rank=None, unit=None):
@@ -39,20 +41,34 @@ def main():
         rank = random.choice(RANKS)
         user = get_or_create_user(username, "pass1234", "personnel", rank=rank, unit=unit)
 
-        features = {
+        leaves_entitled = random.randint(15, 30)
+        leaves_taken = random.randint(0, leaves_entitled)
+
+        raw_features = {
+            "age": random.randint(22, 55),
+            "years_of_service": round(random.uniform(1, 30), 1),
+            "rank_encoded": RANK_ENCODING[rank],
             "deployment_months": random.randint(1, 34),
             "duty_hours": round(random.uniform(9, 16), 1),
-            "night_shifts": random.randint(0, 18),
+            "night_shifts_per_month": random.randint(0, 18),
             "sleep_hours": round(random.uniform(4, 8), 1),
-            "traumatic_incidents": random.randint(0, 6),
-            "social_support": random.randint(3, 10),
-            "wellness_score": random.randint(3, 10),
+            "incidents_exposed": random.randint(0, 6),
+            "leaves_taken": leaves_taken,
+            "leaves_entitled": leaves_entitled,
+            "transfers_last_2yr": random.randint(0, 4),
+            "training_days_yr": random.randint(0, 45),
+            "exercise_freq_per_wk": random.randint(0, 7),
+            "social_support_score": random.randint(3, 10),
             "family_separated": random.choice([0, 0, 1]),
+            "wellness_score": random.randint(3, 10),
         }
-        score, risk = risk_engine.predict(features)
+
+        score, risk = risk_engine.predict(raw_features)
+        derived_features = compute_derived_features(raw_features)
+
         record = Assessment(
-            user_id=user.id, unit=unit, features=features,
-            score=score, risk_level=risk, model_version="rule-engine-v0",
+            user_id=user.id, unit=unit, features=raw_features,
+            score=score, risk_level=risk, model_version=risk_engine.model_version(),
         )
         db.add(record)
         db.commit()
@@ -61,7 +77,7 @@ def main():
         if risk in ("High", "Medium"):
             db.add(Alert(
                 assessment_id=record.id, unit=unit, rank=rank,
-                urgency=risk, reason=risk_engine.alert_reason(features, risk),
+                urgency=risk, reason=risk_engine.alert_reason(derived_features, risk),
             ))
             db.commit()
 
