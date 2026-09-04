@@ -8,7 +8,7 @@ from app.core.feature_engineering import compute_derived_features, MODEL_FEATURE
 
 # RAW inputs collected from HRMS + the wellness self-assessment app.
 # feature_engineering.compute_derived_features() turns these into the
-# full 17-field set the ML model expects (see MODEL_FEATURES).
+# full 20-field set the ML model expects (see MODEL_FEATURES).
 REQUIRED_RAW_FEATURES = [
     "age",
     "years_of_service",
@@ -53,8 +53,8 @@ def model_version() -> str:
 def _rule_based_score(f: Dict) -> float:
     """
     Transparent fallback scorer, used when no trained model is loaded.
-    Operates on the derived (17-field) feature set so its output is
-    directly comparable to the ML model's.
+    Operates on the derived feature set so its output is directly
+    comparable to the ML model's.
     """
     s = 0.0
     s += (f["deployment_months"] / 36) * 18
@@ -70,12 +70,13 @@ def _rule_based_score(f: Dict) -> float:
 
 
 def _ml_score(f: Dict) -> Tuple[float, str]:
+    model = _ml_artifact["model"]
     row = pd.DataFrame([f])[MODEL_FEATURES]
-    scaler = _ml_artifact.get("scaler")
-    if scaler is not None:
-        row = scaler.transform(row)
-    risk = _ml_artifact["model"].predict(row)[0]
-    proba = dict(zip(_ml_artifact["classes"], _ml_artifact["model"].predict_proba(row)[0]))
+    # model is a full sklearn Pipeline (scaler + classifier), so no
+    # separate scaler step is needed here -- predict/predict_proba
+    # run the whole pipeline including scaling.
+    risk = model.predict(row)[0]
+    proba = dict(zip(model.classes_, model.predict_proba(row)[0]))
     score = round(proba.get("Medium", 0) * 50 + proba.get("High", 0) * 100, 1)
     return score, str(risk)
 
@@ -83,8 +84,8 @@ def _ml_score(f: Dict) -> Tuple[float, str]:
 def predict(raw_features: Dict) -> Tuple[float, str]:
     """
     raw_features: dict containing REQUIRED_RAW_FEATURES (what HRMS / the
-    app actually collects). This function derives the full 17-field
-    feature set internally before scoring.
+    app actually collects). This function derives the full feature set
+    internally before scoring.
     """
     missing = [k for k in REQUIRED_RAW_FEATURES if k not in raw_features]
     if missing:
