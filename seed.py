@@ -1,4 +1,4 @@
-import random
+﻿import random
 
 from app.core.database import SessionLocal, Base, engine
 from app.core.security import hash_password
@@ -12,6 +12,18 @@ db = SessionLocal()
 UNITS = ["42 Bn CRPF", "Signals Wing", "Border Detachment C", "Unit 4", "HQ Coy"]
 RANKS = ["Constable", "Head Constable", "ASI", "SI", "Inspector"]
 RANK_ENCODING = {r: i for i, r in enumerate(RANKS)}
+
+FORCE_CODES = ["CRPF", "BSF", "CISF", "ITBP", "SSB"]
+
+
+def make_service_id(used_ids):
+    while True:
+        force = random.choice(FORCE_CODES)
+        number = random.randint(100000, 999999)
+        sid = f"{force}-{number}"
+        if sid not in used_ids:
+            used_ids.add(sid)
+            return sid
 
 
 def get_or_create_user(username, password, role, rank=None, unit=None):
@@ -35,8 +47,10 @@ def main():
     get_or_create_user("admin", "1234", "officer", rank="Commandant", unit="HQ")
     print("Officer account ready -> username: admin | password: 1234")
 
-    for i in range(1, 41):
-        username = f"CAPF{1000 + i}"
+    used_ids = set()
+
+    for i in range(1, 1001):
+        username = make_service_id(used_ids)
         unit = random.choice(UNITS)
         rank = random.choice(RANKS)
         user = get_or_create_user(username, "pass1234", "personnel", rank=rank, unit=unit)
@@ -81,8 +95,8 @@ def main():
             ))
             db.commit()
 
-    print("Seeded 40 demo personnel with assessments + alerts.")
-    print("Sample personnel login -> username: CAPF1001 | password: pass1234")
+    print("Seeded 1000 demo personnel with assessments + alerts.")
+    print("Sample personnel login -> check the database for a generated service ID, password: pass1234")
 
 
 if __name__ == "__main__":
