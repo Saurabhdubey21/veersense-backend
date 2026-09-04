@@ -1,9 +1,7 @@
-import httpx
-from fastapi import APIRouter, Depends, HTTPException
+﻿import httpx
+from fastapi import APIRouter, HTTPException
 
 from app.core.config import settings
-from app.core.security import get_current_user
-from app.models.models import User
 from app.models.schemas import ChatRequest, ChatResponse
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -26,14 +24,16 @@ PERSONNEL_SYSTEM_PROMPT = (
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(body: ChatRequest, user: User = Depends(get_current_user)):
-    if not settings.ANTHROPIC_API_KEY:
+async def chat(body: ChatRequest):
+    if not settings.GROQ_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="ANTHROPIC_API_KEY is not configured on the server. Set it in .env.",
+            detail="GROQ_API_KEY is not configured on the server. Set it in .env / Render env vars.",
         )
 
-    is_officer = user.role == "officer"
+    is_officer = False
+    if body.context:
+        is_officer = body.context.get("role") == "officer"
     system_prompt = OFFICER_SYSTEM_PROMPT if is_officer else PERSONNEL_SYSTEM_PROMPT
 
     if body.context:
@@ -43,26 +43,27 @@ async def chat(body: ChatRequest, user: User = Depends(get_current_user)):
             system_prompt += f" The person's current stress score is {score}/100 ({risk} risk level)."
 
     payload = {
-        "model": settings.CLAUDE_MODEL,
+        "model": settings.GROQ_MODEL,
         "max_tokens": 800,
-        "system": system_prompt,
-        "messages": [{"role": m.role, "content": m.content} for m in body.messages],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            *[{"role": m.role, "content": m.content} for m in body.messages],
+        ],
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
-            "https://api.anthropic.com/v1/messages",
+            "https://api.groq.com/openai/v1/chat/completions",
             headers={
-                "x-api-key": settings.ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
+                "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                "Content-Type": "application/json",
             },
             json=payload,
         )
 
     if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Claude API error: {resp.text}")
+        raise HTTPException(status_code=502, detail=f"Groq API error: {resp.text}")
 
     data = resp.json()
-    reply = "".join(block.get("text", "") for block in data.get("content", []))
+    reply = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     return ChatResponse(reply=reply or "I'm here — could you tell me a bit more?")
